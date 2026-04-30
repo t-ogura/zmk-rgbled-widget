@@ -24,9 +24,16 @@ config RGBLED_WIDGET_WS2812
 if RGBLED_WIDGET_WS2812
 
 config LED_STRIP
+    bool
     default y
-    
+
+# Zephyr 4.x removed CONFIG_WS2812_STRIP and split it into per-bus drivers
+# (WS2812_STRIP_SPI / _GPIO / _I2S / _RPI_PICO_PIO), each auto-enabled via DT.
+# We keep a typed compat symbol so existing configs that set CONFIG_WS2812_STRIP=y
+# don't fail Kconfig parsing. The actual driver is selected by the DT node
+# (e.g. worldsemi,ws2812-spi).
 config WS2812_STRIP
+    bool
     default y
 
 config RGBLED_WIDGET_LED_COUNT
