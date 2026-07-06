@@ -156,10 +156,11 @@ static const uint8_t layer_color_idx[] = {
             color_names[CONFIG_RGBLED_WIDGET_BATTERY_COLOR_##color_label])
 
 // a blink work item as specified by the color and duration
+// (uint32_t per upstream 9cef5af: uint16_t overflowed for durations > 65s)
 struct blink_item {
     uint8_t color;
-    uint16_t duration_ms;
-    uint16_t sleep_ms;
+    uint32_t duration_ms;
+    uint32_t sleep_ms;
 };
 
 // flag to indicate whether the initial boot up sequence is complete
@@ -838,7 +839,7 @@ static void check_shared_led_timeouts(void) {
 }
 
 // Enhanced set_rgb_leds function with multi-LED support
-static void set_rgb_leds(uint8_t color, uint16_t duration_ms) {
+static void set_rgb_leds(uint8_t color, uint32_t duration_ms) {
     // For backward compatibility, set all LEDs to the same color when using simple interface
     for (int i = 0; i < CONFIG_RGBLED_WIDGET_LED_COUNT; i++) {
         ws2812_set_led(i, color);
@@ -887,7 +888,7 @@ void ws2812_update_animations(void) {
 #else // !IS_ENABLED(CONFIG_RGBLED_WIDGET_WS2812) - use GPIO LEDs
 
 // GPIO LED implementation (backward compatible)
-static void set_rgb_leds(uint8_t color, uint16_t duration_ms) {
+static void set_rgb_leds(uint8_t color, uint32_t duration_ms) {
 #if IS_ENABLED(CONFIG_LED)
     for (uint8_t pos = 0; pos < 3; pos++) {
         uint8_t bit = BIT(pos);
@@ -918,31 +919,40 @@ static void indicate_connectivity_internal(void) {
     indicate_connectivity_ws2812();
     return;
 #else
-    // Original implementation for GPIO LEDs and simple WS2812
+    // Original implementation for GPIO LEDs and simple WS2812.
+    // Logic synced with upstream caksoylar/main 21e8004 ("Use new
+    // selected/preferred endpoint API") for behavior parity.
     struct blink_item blink = {.duration_ms = CONFIG_RGBLED_WIDGET_CONN_BLINK_MS};
 
 #if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if IS_ENABLED(CONFIG_ZMK_BLE)
+    uint8_t profile_index = zmk_ble_active_profile_index();
+#endif
+
     switch (zmk_endpoint_get_selected().transport) {
-    case ZMK_TRANSPORT_USB:
+    case ZMK_TRANSPORT_USB: // USB connected and selected
 #if IS_ENABLED(CONFIG_RGBLED_WIDGET_CONN_SHOW_USB)
         LOG_INF("USB connected, blinking %s", color_names[CONFIG_RGBLED_WIDGET_CONN_COLOR_USB]);
         blink.color = CONFIG_RGBLED_WIDGET_CONN_COLOR_USB;
         break;
 #endif
-    default: // ZMK_TRANSPORT_BLE
+    case ZMK_TRANSPORT_BLE: // BLE connected and selected
 #if IS_ENABLED(CONFIG_ZMK_BLE)
-        uint8_t profile_index = zmk_ble_active_profile_index();
-        if (zmk_ble_active_profile_is_connected()) {
-            LOG_CONN_CENTRAL(profile_index, "connected", CONNECTED);
-            blink.color = CONFIG_RGBLED_WIDGET_CONN_COLOR_CONNECTED;
-        } else if (zmk_ble_active_profile_is_open()) {
+        LOG_CONN_CENTRAL(profile_index, "connected", CONNECTED);
+        blink.color = CONFIG_RGBLED_WIDGET_CONN_COLOR_CONNECTED;
+        break;
+#endif
+    default: // ZMK_TRANSPORT_NONE, neither BLE nor USB connected
+#if IS_ENABLED(CONFIG_ZMK_BLE)
+        if (zmk_endpoint_get_preferred_transport() != ZMK_TRANSPORT_NONE &&
+            zmk_ble_active_profile_is_open()) {
             LOG_CONN_CENTRAL(profile_index, "open", ADVERTISING);
             blink.color = CONFIG_RGBLED_WIDGET_CONN_COLOR_ADVERTISING;
-        } else {
-            LOG_CONN_CENTRAL(profile_index, "not connected", DISCONNECTED);
-            blink.color = CONFIG_RGBLED_WIDGET_CONN_COLOR_DISCONNECTED;
+            break;
         }
 #endif
+        LOG_CONN_CENTRAL(-1, "no endpoints connected", DISCONNECTED);
+        blink.color = CONFIG_RGBLED_WIDGET_CONN_COLOR_DISCONNECTED;
         break;
     }
 #elif IS_ENABLED(CONFIG_ZMK_SPLIT_BLE)
