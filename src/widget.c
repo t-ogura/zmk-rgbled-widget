@@ -93,7 +93,10 @@ struct led_state {
 #endif
 
 
-#if LED
+// NOTE: must test the Kconfig symbol, not a bare `LED` macro -- `LED` is
+// never defined anywhere, so `#if LED` silently compiled the whole GPIO
+// path out (WS2812 users never noticed; GPIO-mode LEDs stayed dark).
+#if IS_ENABLED(CONFIG_LED) && !IS_ENABLED(CONFIG_RGBLED_WIDGET_WS2812)
 #define LED_GPIO_NODE_ID DT_COMPAT_GET_ANY_STATUS_OKAY(gpio_leds)
 BUILD_ASSERT(DT_NODE_EXISTS(DT_ALIAS(led_red)),
              "An alias for a red LED is not found for RGBLED_WIDGET");
@@ -885,7 +888,7 @@ void ws2812_update_animations(void) {
 
 // GPIO LED implementation (backward compatible)
 static void set_rgb_leds(uint8_t color, uint16_t duration_ms) {
-#if LED
+#if IS_ENABLED(CONFIG_LED)
     for (uint8_t pos = 0; pos < 3; pos++) {
         uint8_t bit = BIT(pos);
         if ((bit & led_current_color) != (bit & color)) {
