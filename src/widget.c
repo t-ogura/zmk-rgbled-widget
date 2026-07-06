@@ -1202,20 +1202,26 @@ extern void led_process_thread(void *d0, void *d1, void *d2) {
 #endif
 
     while (true) {
-        // wait until a blink item is received and process it
-        struct blink_item blink = {-1, -1, -1};
-        int result_code = k_msgq_get(&led_msgq, &blink, K_MSEC(100)); // Non-blocking with timeout for animations
+        // Wait for a blink item; the 100ms timeout doubles as the WS2812
+        // animation / share-timeout tick.
+        struct blink_item blink;
+        int result_code = k_msgq_get(&led_msgq, &blink, K_MSEC(100));
 
 #if IS_ENABLED(CONFIG_RGBLED_WIDGET_WS2812)
         // Check for expired shared LED timeouts
         check_shared_led_timeouts();
-        
+
         // Update animations
 #   if IS_ENABLED(CONFIG_RGBLED_WIDGET_ANIMATIONS)
         update_all_animations();
 #   endif
 #endif
-        if (result_code != ENOMSG) {
+        // Process only on success (k_msgq_get returns -ENOMSG on timeout;
+        // the old `!= ENOMSG` check compared against the POSITIVE errno so
+        // every timeout fell through and executed an uninitialized blink:
+        // color 0xFF = white, duration 0xFFFFFFFF -- the LED lit white and
+        // the thread slept inside set_rgb_leds for ~49 days).
+        if (result_code == 0) {
             if (blink.duration_ms > 0) {
                 LOG_DBG("Got a blink item from msgq, color %d, duration %d", blink.color,
                         blink.duration_ms);
@@ -1227,21 +1233,22 @@ extern void led_process_thread(void *d0, void *d1, void *d2) {
 
                 set_rgb_leds(blink.color, blink.duration_ms);
 
-                #if SHOW_LAYER_CHANGE
                 if (blink.color == led_layer_color && blink.color > 0) {
                     set_rgb_leds(0, CONFIG_RGBLED_WIDGET_INTERVAL_MS);
                 }
 
-                // wait interval before processing another blink
+                // Return to the base color (black unless layer colors are
+                // active) and wait the inter-blink interval. Upstream runs
+                // this unconditionally; it was mistakenly wrapped in
+                // `#if SHOW_LAYER_CHANGE` here, so GPIO builds without the
+                // layer feature never turned the LED back off after a blink.
                 set_rgb_leds(led_layer_color,
                             blink.sleep_ms > 0 ? blink.sleep_ms : CONFIG_RGBLED_WIDGET_INTERVAL_MS);
-                #endif
 
             } else {
                 LOG_DBG("Got a fix color item from msgq, color %d", blink.color);
                 set_rgb_leds(blink.color, 0);
             }
-            // timeout
         }
     }
 }
