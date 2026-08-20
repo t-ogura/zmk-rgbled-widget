@@ -491,13 +491,21 @@ static int indicate_battery_enhanced(void) {
             battery_level, color_names[color_idx], pattern.type);
     
     int ret = set_status_led(STATUS_BATTERY, color_idx, 0, true);
-    
-    // Apply pattern if using spatial mapping
+
+    // ALWAYS install the pattern, including ANIM_STATIC. Installing only
+    // non-static patterns left a previously-set animation (e.g. the
+    // battery-missing magenta blink from early boot, before the first ADC
+    // sample) running forever: update_all_animations() kept repainting it
+    // over the static color set_status_led wrote. An ANIM_STATIC install
+    // overwrites led_states[i].anim, which stops the stale animation.
     uint8_t battery_led = get_primary_led_for_status(STATUS_BATTERY);
-    if (battery_led < CONFIG_RGBLED_WIDGET_LED_COUNT && pattern.type != ANIM_STATIC) {
+    if (battery_led < CONFIG_RGBLED_WIDGET_LED_COUNT) {
+        if (pattern.type == ANIM_STATIC && pattern.start_color == 0) {
+            pattern.start_color = color_idx;
+        }
         set_led_pattern(battery_led, &pattern);
     }
-    
+
     return ret;
 }
 
@@ -551,10 +559,17 @@ static int indicate_connectivity_ws2812(void) {
 #endif
     
     int ret = set_status_led(STATUS_CONNECTIVITY, color_idx, 0, true);
-    
-    // Apply pattern if using spatial mapping
+
+    // ALWAYS install the pattern, including ANIM_STATIC -- same stale-
+    // animation bug as indicate_battery_enhanced: the disconnected red
+    // blink installed during boot (before the split link came up) was
+    // never cleared by the connected ANIM_STATIC path, so the conn LED
+    // kept blinking red forever despite a healthy connection.
     uint8_t conn_led = get_primary_led_for_status(STATUS_CONNECTIVITY);
-    if (conn_led < CONFIG_RGBLED_WIDGET_LED_COUNT && pattern.type != ANIM_STATIC) {
+    if (conn_led < CONFIG_RGBLED_WIDGET_LED_COUNT) {
+        if (pattern.type == ANIM_STATIC && pattern.start_color == 0) {
+            pattern.start_color = color_idx;
+        }
         set_led_pattern(conn_led, &pattern);
     }
     
