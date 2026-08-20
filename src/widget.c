@@ -456,6 +456,44 @@ static void update_all_animations(void) {
     }
 }
 
+// --- Non-persistent (event-driven) display support -----------------------
+// With RGBLED_WIDGET_WS2812_PERSISTENT=n, each status is shown for its
+// blink duration and then blanked, mirroring the event-driven GPIO /
+// upstream behavior instead of the always-on dashboard. A lit WS2812 pair
+// costs several mA continuously, which matters on battery-powered halves.
+#if !IS_ENABLED(CONFIG_RGBLED_WIDGET_WS2812_PERSISTENT)
+static void blank_status_led(enum status_type status_type) {
+    uint8_t led = get_primary_led_for_status(status_type);
+    if (led < CONFIG_RGBLED_WIDGET_LED_COUNT) {
+        // Static-black pattern both stops any running animation and paints
+        // the LED off; then release the status bookkeeping.
+        struct animation_state off = {.type = ANIM_STATIC, .start_color = 0};
+        set_led_pattern(led, &off);
+    }
+    ws2812_clear_status_led(status_type);
+}
+
+static void blank_battery_work_cb(struct k_work *work) { blank_status_led(STATUS_BATTERY); }
+static void blank_conn_work_cb(struct k_work *work) { blank_status_led(STATUS_CONNECTIVITY); }
+static K_WORK_DELAYABLE_DEFINE(blank_battery_work, blank_battery_work_cb);
+static K_WORK_DELAYABLE_DEFINE(blank_conn_work, blank_conn_work_cb);
+
+static void schedule_status_blank(enum status_type status_type, uint32_t after_ms) {
+    switch (status_type) {
+    case STATUS_BATTERY:
+        k_work_reschedule(&blank_battery_work, K_MSEC(after_ms));
+        break;
+    case STATUS_CONNECTIVITY:
+        k_work_reschedule(&blank_conn_work, K_MSEC(after_ms));
+        break;
+    default:
+        break;
+    }
+}
+#else
+static inline void schedule_status_blank(enum status_type status_type, uint32_t after_ms) {}
+#endif // !IS_ENABLED(CONFIG_RGBLED_WIDGET_WS2812_PERSISTENT)
+
 // Enhanced status indication with patterns
 static int indicate_battery_enhanced(void) {
     uint8_t battery_level = zmk_battery_state_of_charge();
@@ -505,6 +543,8 @@ static int indicate_battery_enhanced(void) {
         }
         set_led_pattern(battery_led, &pattern);
     }
+
+    schedule_status_blank(STATUS_BATTERY, CONFIG_RGBLED_WIDGET_BATTERY_BLINK_MS);
 
     return ret;
 }
@@ -572,6 +612,8 @@ static int indicate_connectivity_ws2812(void) {
         }
         set_led_pattern(conn_led, &pattern);
     }
+
+    schedule_status_blank(STATUS_CONNECTIVITY, CONFIG_RGBLED_WIDGET_CONN_BLINK_MS);
     
     return ret;
 }
@@ -1085,14 +1127,41 @@ void indicate_battery(void) {
 #endif // Enhanced vs original
 }
 
+#if IS_ENABLED(CONFIG_RGBLED_WIDGET_WS2812)
+// Battery display band; re-render only when the band changes so the
+// display stays live (fixes the boot-time "missing" magenta sticking
+// around after the first real ADC sample) without churning on every
+// 1% step.
+static inline uint8_t battery_display_band(uint8_t level) {
+    if (level == 0) return 0;                                            // missing
+    if (level <= CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_CRITICAL) return 1;  // critical
+    if (level < CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_LOW) return 2;        // low
+    if (level < CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_HIGH) return 3;       // medium
+    return 4;                                                            // high
+}
+static uint8_t last_battery_band = 0; // boot indication runs with level 0
+#endif
+
 static int led_battery_listener_cb(const zmk_event_t *eh) {
     if (!initialized) {
         return 0;
     }
 
-    // check if we are in critical battery levels at state change, blink if we are
     uint8_t battery_level = as_zmk_battery_state_changed(eh)->state_of_charge;
 
+#if IS_ENABLED(CONFIG_RGBLED_WIDGET_WS2812)
+    // WS2812: refresh the battery status display on band changes. This is
+    // what replaces the boot-time magenta once the first real sample lands,
+    // and (in persistent mode) keeps the dashboard live. The GPIO-style
+    // msgq blink below would stomp the whole strip, so don't use it here --
+    // the critical band already renders as a pulse via the enhanced path.
+    uint8_t band = battery_display_band(battery_level);
+    if (band != last_battery_band) {
+        last_battery_band = band;
+        indicate_battery();
+    }
+#else
+    // check if we are in critical battery levels at state change, blink if we are
     if (battery_level > 0 && battery_level <= CONFIG_RGBLED_WIDGET_BATTERY_LEVEL_CRITICAL) {
         LOG_BATTERY(battery_level, CRITICAL);
 
@@ -1102,6 +1171,7 @@ static int led_battery_listener_cb(const zmk_event_t *eh) {
                     blink.duration_ms, battery_level);
         k_msgq_put(&led_msgq, &blink, K_NO_WAIT);
     }
+#endif
     return 0;
 }
 

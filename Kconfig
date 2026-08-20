@@ -23,6 +23,17 @@ config RGBLED_WIDGET_WS2812
 
 if RGBLED_WIDGET_WS2812
 
+config RGBLED_WIDGET_WS2812_PERSISTENT
+    bool "Keep status LEDs lit continuously (dashboard mode)"
+    default y
+    help
+      When enabled (default, previous behavior), battery and connectivity
+      status stay displayed on the strip at all times. When disabled, each
+      status is shown for its blink duration after boot or a state-change
+      event and the strip then goes dark, like the event-driven GPIO/
+      upstream behavior. Saves several mA of continuous LED current on
+      battery-powered boards.
+
 config LED_STRIP
     bool
     default y
